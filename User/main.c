@@ -2,7 +2,7 @@
  * File Name          : main.c
  * Author             : Tauno Erik
  * Started            : 2026/02/23
- * Edited             : 2026/02/24
+ * Edited             : 2026/02/25
  * Description        : DC1307 RTC Module
  *********************************************************************************
  * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
@@ -20,6 +20,7 @@
  */
 
 #include "debug.h"
+#include <string.h> // Required for strlen()
 
 // DS1307 I2C Address is 0x68 (0xD0 for Write, 0xD1 for Read)
 #define DS1307_ADDR 0xD0
@@ -27,6 +28,11 @@
 
 // Global buffer for time data: [0]=Sec, [1]=Min, [2]=Hour, [3]=Day, [4]=Date, [5]=Month, [6]=Year
 uint8_t time_buf[7];
+
+// Circular Buffer
+#define SRAM_START_ADDR 0x08
+#define LOG_OFFSET      0x09  // Data starts here
+#define LOG_SIZE        55    // Total bytes available for characters
 
 volatile unsigned long ms_ticks = 0;
 
@@ -40,8 +46,10 @@ void SysTick_Handler(void) {
     SysTick->CMP += (SystemCoreClock / 8) / 1000;
 }
 
-/* Custom SysTick Initialization */
-void SysTick_NonBlocking_Init(void) {
+/*********************************************************************
+ * @brief   Custom SysTick Initialization 
+ */
+void SysTick_nonblocking_init(void) {
     /* Reset Counter */
     SysTick->CTLR = 0;
     SysTick->CNT = 0;
@@ -92,10 +100,10 @@ void USARTx_CFG(void)
 }
 
 
-/*
- * I2C seadistamine
+/*********************************************************************
+ * @brief   I2C seadistamine
  */
-void I2C_Config_Init(void) {
+void I2C_config_init(void) {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
     I2C_InitTypeDef I2C_InitTSturcture = {0};
 
@@ -119,24 +127,24 @@ void I2C_Config_Init(void) {
     I2C_Cmd(I2C1, ENABLE);
 }
 
-/*
- * Converts BCD to DEC
+/*********************************************************************
+ * @brief   Converts BCD to DEC
  */
-uint8_t BCD2DEC(uint8_t val) {
+uint8_t BCD_to_DEC(uint8_t val) {
     return ((val >> 4) * 10) + (val & 0x0F);
 }
 
-/*
- * Converts DEC to BCD
+/*********************************************************************
+ * @brief    Converts DEC to BCD
  */
-uint8_t DEC2BCD(uint8_t val) {
+uint8_t DEC_to_BCD(uint8_t val) {
     return ((val / 10) << 4) | (val % 10);
 }
 
-/*
- * Writes time to RTC
+/*********************************************************************
+ * @brief  Writes time to RTC
  */
-void DS1307_SetTime(uint8_t sec, uint8_t min, uint8_t hour, uint8_t date, uint8_t month, uint8_t year) {
+void DS1307_write_time(uint8_t sec, uint8_t min, uint8_t hour, uint8_t date, uint8_t month, uint8_t year) {
     while(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
     I2C_GenerateSTART(I2C1, ENABLE);
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
@@ -147,28 +155,28 @@ void DS1307_SetTime(uint8_t sec, uint8_t min, uint8_t hour, uint8_t date, uint8_
     I2C_SendData(I2C1, 0x00); // Start at Reg 0
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
-    I2C_SendData(I2C1, DEC2BCD(sec)); // Bit 7 of Sec is 0 to start oscillator
+    I2C_SendData(I2C1, DEC_to_BCD(sec)); // Bit 7 of Sec is 0 to start oscillator
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_SendData(I2C1, DEC2BCD(min));
+    I2C_SendData(I2C1, DEC_to_BCD(min));
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_SendData(I2C1, DEC2BCD(hour));
+    I2C_SendData(I2C1, DEC_to_BCD(hour));
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
     I2C_SendData(I2C1, 0x01); // Day of week (unused here)
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_SendData(I2C1, DEC2BCD(date));
+    I2C_SendData(I2C1, DEC_to_BCD(date));
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_SendData(I2C1, DEC2BCD(month));
+    I2C_SendData(I2C1, DEC_to_BCD(month));
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-    I2C_SendData(I2C1, DEC2BCD(year));
+    I2C_SendData(I2C1, DEC_to_BCD(year));
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
     I2C_GenerateSTOP(I2C1, ENABLE);
 }
 
-/*
- * Reads the current time from RTC
+/*********************************************************************
+ * @brief  Reads the current time from RTC
  */
-void DS1307_GetTime(void) {
+void DS1307_read_time(void) {
     while(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
     I2C_GenerateSTART(I2C1, ENABLE);
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
@@ -188,17 +196,18 @@ void DS1307_GetTime(void) {
     for(int i = 0; i < 7; i++) {
         if(i == 6) I2C_AcknowledgeConfig(I2C1, DISABLE);
         while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
-        time_buf[i] = BCD2DEC(I2C_ReceiveData(I2C1));
+        time_buf[i] = BCD_to_DEC(I2C_ReceiveData(I2C1));
     }
     I2C_GenerateSTOP(I2C1, ENABLE);
     I2C_AcknowledgeConfig(I2C1, ENABLE);
 }
 
-/*
-The DS1307 features 56 bytes of non-volatile SRAM (if a backup battery is connected). 
-These bytes are located at addresses 0x08 to 0x3F.
-*/
-void DS1307_WriteRAM(uint8_t addr, uint8_t data) {
+/*********************************************************************
+ * @brief  The DS1307 features 56 bytes of non-volatile SRAM 
+ *         (if a backup battery is connected). These bytes are located 
+ *         at addresses 0x08 to 0x3F.
+ */
+void DS1307_write_RAM(uint8_t addr, uint8_t data) {
     if (addr < 0x08 || addr > 0x3F) return; // Guard: Only SRAM range
 
     while(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY));
@@ -217,7 +226,12 @@ void DS1307_WriteRAM(uint8_t addr, uint8_t data) {
     I2C_GenerateSTOP(I2C1, ENABLE);
 }
 
-uint8_t DS1307_ReadRAM(uint8_t addr) {
+/*********************************************************************
+ * @brief  Read data from address
+ * @param  addr: data addres in hex
+ * @return data
+ */
+uint8_t DS1307_read_RAM(uint8_t addr) {
     uint8_t data = 0;
     if (addr < 0x08 || addr > 0x3F) return 0;
 
@@ -249,12 +263,13 @@ uint8_t DS1307_ReadRAM(uint8_t addr) {
 }
 
 
-/**
+/*********************************************************************
  * @brief Reads a block of data from the DS1307 SRAM.
  * @param buffer: Pointer to the array where data will be stored.
  * @param len: Number of bytes to read (Max 56 for full SRAM).
+ * @return  none
  */
-void DS1307_ReadRAMBurst(uint8_t *buffer, uint8_t len) {
+void DS1307_read_RAM_burst(uint8_t addr, uint8_t *buffer, uint8_t len) {
     if (len > 56) len = 56; // Limit to actual SRAM size
 
     // 1. Wait for I2C bus to be free
@@ -267,7 +282,7 @@ void DS1307_ReadRAMBurst(uint8_t *buffer, uint8_t len) {
     I2C_Send7bitAddress(I2C1, DS1307_ADDR, I2C_Direction_Transmitter);
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
 
-    I2C_SendData(I2C1, 0x08); // Starting address of SRAM
+    I2C_SendData(I2C1, addr); // Starting address of SRAM
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
     // 3. Repeated Start to switch to Read Mode
@@ -302,12 +317,13 @@ void DS1307_ReadRAMBurst(uint8_t *buffer, uint8_t len) {
 }
 
 
-/**
+/*********************************************************************
  * @brief Writes a block of data to the DS1307 SRAM.
  * @param buffer: Pointer to the data array to be written.
  * @param len: Number of bytes to write (Max 56).
+ * @return  none
  */
-void DS1307_WriteRAMBurst(uint8_t *buffer, uint8_t len) {
+void DS1307_write_RAM_burst(uint8_t *buffer, uint8_t len) {
     if (len > 56) len = 56; // Cap at max SRAM size
 
     // 1. Wait for I2C bus to be free
@@ -346,13 +362,78 @@ typedef struct {
 
 DeviceConfig mySettings = {2500, 1, 0x54, 0xA5}; // Example data
 
-void Save_Settings(DeviceConfig *cfg) {
+/*********************************************************************
+ * @brief
+ * @return  none
+ */
+void save_settings(DeviceConfig *cfg) {
     // Cast the struct pointer to a uint8_t pointer
-    DS1307_WriteRAMBurst((uint8_t*)cfg, sizeof(DeviceConfig));
+    DS1307_write_RAM_burst((uint8_t*)cfg, sizeof(DeviceConfig));
 }
 
-void Load_Settings(DeviceConfig *cfg) {
-    DS1307_ReadRAMBurst((uint8_t*)cfg, sizeof(DeviceConfig));
+/*********************************************************************
+ * @brief
+ * @return  none
+ */
+void load_settings(DeviceConfig *cfg) {
+    DS1307_read_RAM_burst(SRAM_START_ADDR, (uint8_t*)cfg, sizeof(DeviceConfig));
+}
+
+/*********************************************************************
+ * @brief
+ * @return  none
+ */
+void DS1307_Log_Read_All(void) {
+    uint8_t write_ptr;
+    uint8_t full_buffer[LOG_SIZE];
+
+    // 1. Read the current write pointer (stored at 0x08)
+    write_ptr = DS1307_read_RAM(SRAM_START_ADDR);
+    
+    // Safety check: if the pointer is invalid, reset it
+    if(write_ptr >= LOG_SIZE) write_ptr = 0;
+
+    // 2. Read the entire log area into a local buffer
+    // We start reading from 0x09 for LOG_SIZE bytes
+    DS1307_read_RAM_burst(LOG_OFFSET, full_buffer, LOG_SIZE);
+
+    printf("--- RTC LOG DUMP ---\r\n");
+
+    // 3. Print the data starting from the "oldest" byte
+    // The oldest byte is at write_ptr, the newest is at write_ptr - 1
+    for (int i = 0; i < LOG_SIZE; i++) {
+        uint8_t index = (write_ptr + i) % LOG_SIZE;
+        uint8_t c = full_buffer[index];
+
+        // Only print printable ASCII characters
+        if (c >= 32 && c <= 126) {
+            printf("%c", c);
+        } else if (c == '\n' || c == '\r') {
+            printf("%c", c);
+        }
+    }
+    printf("\r\n--- END OF LOG ---\r\n");
+}
+
+void DS1307_Log_Char(char c) {
+    uint8_t write_ptr = DS1307_read_RAM(SRAM_START_ADDR);
+    
+    if(write_ptr >= LOG_SIZE) write_ptr = 0;
+
+    // Write the character to the current pointer position (offset by 0x09)
+    DS1307_write_RAM(LOG_OFFSET + write_ptr, (uint8_t)c);
+
+    // Increment and wrap the pointer
+    write_ptr = (write_ptr + 1) % LOG_SIZE;
+
+    // Save the new pointer back to 0x08
+    DS1307_write_RAM(SRAM_START_ADDR, write_ptr);
+}
+
+void DS1307_Log_String(char *str) {
+    while(*str) {
+        DS1307_Log_Char(*str++);
+    }
 }
 
 /*********************************************************************
@@ -366,6 +447,7 @@ int main(void)
 {
     uint32_t last_print_1 = 0;
     uint32_t last_print_2 = 0;
+    uint32_t last_print_3 = 0;
     uint8_t boot_count = 0;
     uint8_t sram_dump[56];
 
@@ -379,26 +461,26 @@ int main(void)
 
     USARTx_CFG();
 
-    I2C_Config_Init();
-    SysTick_NonBlocking_Init();
+    I2C_config_init();
+    SysTick_nonblocking_init();
 
     // 1. Read existing boot count from SRAM address 0x08
-    boot_count = DS1307_ReadRAM(0x08);
+    boot_count = DS1307_read_RAM(0x08);
     boot_count++;
     
     // 2. Write updated count back to SRAM
-    DS1307_WriteRAM(0x08, boot_count);
+    DS1307_write_RAM(0x08, boot_count);
 
     printf("System Booted! Total boots: %d\r\n", boot_count);
 
     // Write current settings to the RTC battery-backed RAM
-    Save_Settings(&mySettings);
+    save_settings(&mySettings);
 
     printf("Settings saved to RTC SRAM.\r\n");
 
     // Later, you can wipe the local struct and reload it from RTC
     DeviceConfig loadedSettings = {0};
-    Load_Settings(&loadedSettings);
+    load_settings(&loadedSettings);
 
     if(loadedSettings.magic_key == 0xA5) {
         printf("Config loaded! Mode: %d, SetPoint: %d\r\n", 
@@ -411,7 +493,7 @@ int main(void)
     {
         /*
         // Blocking way to print time
-        DS1307_GetTime();
+        DS1307_read_time();
         printf("Date: 20%02d-%02d-%02d  Time: %02d:%02d:%02d\r\n", 
                 time_buf[6], time_buf[5], time_buf[4], 
                 time_buf[2], time_buf[1], time_buf[0]);
@@ -423,14 +505,14 @@ int main(void)
         if (ms_ticks - last_print_1 >= 1000) {
             last_print_1 = ms_ticks;
 
-            DS1307_GetTime();
+            DS1307_read_time();
             
             printf("[%lu ms] Date: 20%02d-%02d-%02d  Time: %02d:%02d:%02d\r\n", 
                     ms_ticks,
                     time_buf[6], time_buf[5], time_buf[4], 
                     time_buf[2], time_buf[1], time_buf[0]);
             // 1. Read boot count from SRAM address 0x08
-            boot_count = DS1307_ReadRAM(0x08);
+            boot_count = DS1307_read_RAM(0x08);
             printf("boot_count: %d\r\n", boot_count);
         }
 
@@ -438,13 +520,18 @@ int main(void)
             last_print_2 = ms_ticks;
 
             printf("--- DS1307 SRAM DUMP ---\r\n");
-            DS1307_ReadRAMBurst(sram_dump, 56);
+            DS1307_read_RAM_burst(SRAM_START_ADDR, sram_dump, 56);
 
             for(int i = 0; i < 56; i++) {
                 printf("%02X ", sram_dump[i]);
                 if((i + 1) % 8 == 0) printf("\r\n"); // New line every 8 bytes
             }
             printf("------------------------\r\n");
+        }
+
+        if (ms_ticks - last_print_3 >= 13000) {
+            last_print_3 = ms_ticks;
+            DS1307_Log_Read_All();
         }
 
         // You can do other things here (like blink an LED) 
